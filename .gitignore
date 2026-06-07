@@ -1,0 +1,35 @@
+# IDEs
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments & Secrets
+.venv/
+venv/
+env/
+.env
+*.key
+
+# Logs & Caches
+*.log
+.cache/
+.ipynb_checkpoints/
+
+# Project Data & Artifacts
+**/models/
+**/dataset/
+examples/results/
+examples/data/
+
+# macOS
+.DS_Store

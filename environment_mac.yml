@@ -1,0 +1,27 @@
+name: pno
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - torchaudio
+  - numpy
+  - scipy
+  - matplotlib
+  - scikit-learn
+  - pandas
+  - jupyter
+  - ipykernel
+  - tqdm
+  - prettytable
+  - pyyaml
+  - h5py
+  - pip
+  - pip:
+      - scikit-fmm
+      - pykonal
+      - torch-summary
+      - wandb
