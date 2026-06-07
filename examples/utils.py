@@ -90,13 +90,13 @@ def load_new_model(device, model_dir="examples/models/"):
     return modelSDF, modelPNO
 
 
-def load_pno_models(device, model_dir="examples/models/"):
+def load_pno_models(device, model_dir="examples/results/"):
     if not os.path.exists(model_dir):
-        model_dir = "./models/"
+        model_dir = "./results/"
     from models.fno import FNO2d
     from models.deepnormMultiGoal import DEEPNORM2dMultiGoal
     modelSDF = FNO2d(4, 1, 8, 8, 16).to(device)
-    modelPNO = DEEPNORM2dMultiGoal(4, 8, 8, 16, in_channels=2).to(device)
+    modelPNO = DEEPNORM2dMultiGoal(4, 8, 8, 16).to(device)
     try:
         sdf_path = os.path.join(model_dir, "FNOSDF/best_model.pt")
         pno_path = os.path.join(model_dir, "PNOwPINN/best_model.pt")
@@ -150,14 +150,19 @@ def step_obstacles(obs_positions, obs_velocities, binary_map, H, W):
         obs_positions[i], obs_velocities[i] = pos, vel
 
 
-def run_pno_inference(modelPNO, risk_map, chi_tensor, goal_coord, mask_tensor, device):
+def run_pno_inference(modelPNO, risk_map, chi_tensor, goal_coord, mask_tensor, device, multi_channel=True):
     # Order for Alex's model (from notebook): [Chi, Risk]
-    risk_t = torch.tensor(risk_map, dtype=torch.float).reshape(1, risk_map.shape[0], risk_map.shape[1], 1).to(device)
     chi_t = chi_tensor.to(device)
     with torch.no_grad():
-        input_tensor = torch.cat([chi_t, risk_t], dim=-1)
+        if multi_channel:
+            risk_t = torch.tensor(risk_map, dtype=torch.float).reshape(1, risk_map.shape[0], risk_map.shape[1], 1).to(device)
+            input_tensor = torch.cat([chi_t, risk_t], dim=-1)
+        else:
+            # Original PNO model: occupancy (chi) map only, single channel
+            input_tensor = chi_t
         cost_to_go = modelPNO(input_tensor, goal_coord)
     return (cost_to_go * mask_tensor).squeeze().cpu().numpy()
+
 
 
 def plan_path_astar(start_node, goal_node, cost_map, value_function, risk_weight=10.0):
@@ -178,22 +183,24 @@ def run_risk_simulation(obs_pos_init, obs_vel_init, static_risk, binary_map, H, 
 
 def run_planning_simulation(obs_pos_init, obs_vel_init, agent_pos_init, goal_data,
                             modelPNO, chi_tensor, mask_tensor, device,
-                            static_risk, binary_map, H, W, sigma_dyn, alpha_dyn, global_path=None):
+                            static_risk, binary_map, H, W, sigma_dyn, alpha_dyn, global_path=None, multi_channel=True):
     obs_pos = [p.copy() for p in obs_pos_init]; obs_vel = [v.copy() for v in obs_vel_init]
-    agent_pos = agent_pos_init.copy(); goal_coord = torch.tensor([goal_data], dtype=torch.int).to(device)
-    risk_frames, obs_frames, agent_frames, path_frames = [], [], [], []
+    #agent_pos = agent_pos_init.copy(); goal_coord = torch.tensor([goal_data], dtype=torch.int).to(device)
+    agent_pos = agent_pos_init.copy(); goal_coord = torch.tensor(np.array([goal_data]), dtype=torch.int).to(device)
+    risk_frames, obs_frames, agent_frames, path_frames, collision_frames = [], [], [], [], []
     
     # Metric initialization
     total_nodes_expanded = 0
     cumulative_risk = 0.0
     collision_count = 0
+    collision_points = []
     
     max_steps = 500
     while not np.array_equal(agent_pos, goal_data) and len(agent_frames) < max_steps:
         risk = compute_total_risk(obs_pos, obs_vel, static_risk, H, W, sigma_dyn, alpha_dyn)
         risk_frames.append(risk.copy()); obs_frames.append(np.array(obs_pos).copy())
         
-        cost_map = run_pno_inference(modelPNO, risk, chi_tensor, goal_coord, mask_tensor, device)
+        cost_map = run_pno_inference(modelPNO, risk, chi_tensor, goal_coord, mask_tensor, device, multi_channel=multi_channel)
         path, expands = plan_path_astar(agent_pos, goal_data, risk, cost_map)
         
         path_frames.append(path.copy())
@@ -204,7 +211,9 @@ def run_planning_simulation(obs_pos_init, obs_vel_init, agent_pos_init, goal_dat
         cumulative_risk += risk[int(agent_pos[0]), int(agent_pos[1])]
         if check_collision(agent_pos, obs_pos, binary_map):
             collision_count += 1
+            collision_points.append(agent_pos.copy())
             
+        collision_frames.append(np.array(collision_points).copy())
         agent_frames.append(agent_pos.copy()); step_obstacles(obs_pos, obs_vel, binary_map, H, W)
         
     metrics = {
@@ -217,22 +226,23 @@ def run_planning_simulation(obs_pos_init, obs_vel_init, agent_pos_init, goal_dat
     }
     
     return {'risk': risk_frames, 'obs': obs_frames, 'agent': agent_frames, 'path': path_frames, 
-            'global_path': global_path, 'metrics': metrics}
+            'collisions': collision_frames, 'global_path': global_path, 'metrics': metrics}
 
 
 def run_dynamic_window_simulation(obs_pos_init, obs_vel_init, agent_pos_init, goal_data,
                                  modelPNO, chi_tensor, mask_tensor, device,
-                                 static_risk, binary_map, H, W, sigma_dyn, alpha_dyn, global_path=None):
+                                 static_risk, binary_map, H, W, sigma_dyn, alpha_dyn, global_path=None, multi_channel=True):
     import torch.nn.functional as F
     obs_pos = [p.copy() for p in obs_pos_init]; obs_vel = [v.copy() for v in obs_vel_init]
     agent_pos = agent_pos_init.copy()
     window_center = agent_pos.copy() # Stable center
-    risk_frames, obs_frames, agent_frames, path_frames = [], [], [], []
+    risk_frames, obs_frames, agent_frames, path_frames, collision_frames = [], [], [], [], []
     
     # Metric initialization
     total_nodes_expanded = 0
     cumulative_risk = 0.0
     collision_count = 0
+    collision_points = []
     
     max_steps = 500; base_window_size = 20
 
@@ -279,7 +289,11 @@ def run_dynamic_window_simulation(obs_pos_init, obs_vel_init, agent_pos_init, go
         model_goal = torch.tensor(np.array([[local_goal[0] * (256.0/(r_max-r_min)), 
                                              local_goal[1] * (256.0/(c_max-c_min))]]), dtype=torch.int).to(device)
         
-        input_tensor = torch.cat([input_chi, input_risk], dim=1).permute(0, 2, 3, 1) # [1, 256, 256, 2]
+        #input_tensor = torch.cat([input_chi, input_risk], dim=1).permute(0, 2, 3, 1) # [1, 256, 256, 2]
+        if multi_channel:
+            input_tensor = torch.cat([input_chi, input_risk], dim=1).permute(0, 2, 3, 1) # [1, 256, 256, 2]
+        else:
+            input_tensor = input_chi.permute(0, 2, 3, 1) # [1, 256, 256, 1]
         with torch.no_grad():
             cost_to_go_upscaled = modelPNO(input_tensor, model_goal)
             cost_to_go_local = F.interpolate(cost_to_go_upscaled.permute(0, 3, 1, 2), 
@@ -300,7 +314,9 @@ def run_dynamic_window_simulation(obs_pos_init, obs_vel_init, agent_pos_init, go
         cumulative_risk += risk_global[int(agent_pos[0]), int(agent_pos[1])]
         if check_collision(agent_pos, obs_pos, binary_map):
             collision_count += 1
+            collision_points.append(agent_pos.copy())
             
+        collision_frames.append(np.array(collision_points).copy())
         agent_frames.append(agent_pos.copy()); step_obstacles(obs_pos, obs_vel, binary_map, H, W)
         
     metrics = {
@@ -313,7 +329,7 @@ def run_dynamic_window_simulation(obs_pos_init, obs_vel_init, agent_pos_init, go
     }
         
     return {'risk': risk_frames, 'obs': obs_frames, 'agent': agent_frames, 'path': path_frames, 
-            'global_path': global_path, 'metrics': metrics}
+            'collisions': collision_frames, 'global_path': global_path, 'metrics': metrics}
 
 
 def animation_step(frame, data_dict, artists):
@@ -331,13 +347,21 @@ def animation_step(frame, data_dict, artists):
             artists['global_path_bin'].set_data(gp[:, 1], gp[:, 0]); updated.append(artists['global_path_bin'])
         if 'global_path_risk' in artists:
             artists['global_path_risk'].set_data(gp[:, 1], gp[:, 0]); updated.append(artists['global_path_risk'])
-
     if 'agent' in data_dict:
         if 'agent_dot_bin' in artists:
             artists['agent_dot_bin'].set_data([data_dict['agent'][frame][1]], [data_dict['agent'][frame][0]]); updated.append(artists['agent_dot_bin'])
         if 'agent_dot_risk' in artists:
             artists['agent_dot_risk'].set_data([data_dict['agent'][frame][1]], [data_dict['agent'][frame][0]]); updated.append(artists['agent_dot_risk'])
-        if 'path_line' in artists:
+
+    if 'collisions' in data_dict:
+        c_points = data_dict['collisions'][frame]
+        if len(c_points) > 0:
+            if 'collision_dots_bin' in artists:
+                artists['collision_dots_bin'].set_data(c_points[:, 1], c_points[:, 0]); updated.append(artists['collision_dots_bin'])
+            if 'collision_dots_risk' in artists:
+                artists['collision_dots_risk'].set_data(c_points[:, 1], c_points[:, 0]); updated.append(artists['collision_dots_risk'])
+
+    if 'path' in data_dict:
             p = data_dict['path'][frame]
             if len(p) > 0: artists['path_line'].set_data(p[:, 1], p[:, 0])
             else: artists['path_line'].set_data([], [])

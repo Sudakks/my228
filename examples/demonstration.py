@@ -83,8 +83,10 @@ def run_demo(
 
     if model == "new":
         modelSDF, modelPNO = load_new_model(device)
+        multi_channel = True
     else:
         modelSDF, modelPNO = load_pno_models(device)
+        multi_channel = False
 
     mask_tensor = torch.tensor(binary_map, dtype=torch.float).reshape(1, H, W, 1).to(device)
     with torch.no_grad():
@@ -95,7 +97,8 @@ def run_demo(
     # --- 4. Static Path Planning (Global Guide) ---
     print("Planning global static path...")
     goal_coord_static = torch.tensor(np.array([goal_data]), dtype=torch.int).to(device)
-    cost_map_static = run_pno_inference(modelPNO, static_risk, chi_tensor, goal_coord_static, mask_tensor, device)
+    #cost_map_static = run_pno_inference(modelPNO, static_risk, chi_tensor, goal_coord_static, mask_tensor, device)
+    cost_map_static = run_pno_inference(modelPNO, static_risk, chi_tensor, goal_coord_static, mask_tensor, device, multi_channel=multi_channel)
     global_path, _ = plan_path_astar(agent_pos_init, goal_data, static_risk, cost_map_static, risk_weight=10.0)
 
     if len(global_path) == 0:
@@ -108,14 +111,14 @@ def run_demo(
                                                   modelPNO, chi_tensor, mask_tensor, device,
                                                   static_risk, binary_map, H, W,
                                                   sigma_dynamic, alpha_dynamic,
-                                                  global_path=global_path)
+                                                  global_path=global_path, multi_channel=multi_channel)
     else:
         print("Running Whole Map Simulation...")
         plan_data = run_planning_simulation(obs_positions, obs_velocities, agent_pos_init, goal_data,
                                             modelPNO, chi_tensor, mask_tensor, device,
                                             static_risk, binary_map, H, W,
                                             sigma_dynamic, alpha_dynamic,
-                                            global_path=global_path)
+                                            global_path=global_path, multi_channel=multi_channel)
 
     # --- 6. Save Results ---
     final_output_dir = os.path.join(output_dir, str(map_size), f"{method}_{model}")
@@ -128,6 +131,7 @@ def run_demo(
     gp_line_bin, = ax_bin.plot([], [], 'b--', alpha=0.5, label='Global Plan')
     obs_dots_bin, = ax_bin.plot([], [], 'ko', markersize=6)
     agent_dot_bin, = ax_bin.plot([], [], 'bs', markersize=6)
+    collision_dots_bin, = ax_bin.plot([], [], 'bx', markersize=5)
     ax_bin.plot(goal_data[1], goal_data[0], 'b*', markersize=10)
     ax_bin.set_title("Binary Environment")
     ax_bin.axis('off')
@@ -136,6 +140,7 @@ def run_demo(
     path_line, = ax_risk.plot([], [], 'b-', linewidth=2)
     obs_dots_risk, = ax_risk.plot([], [], 'ko', markersize=6)
     agent_dot_risk, = ax_risk.plot([], [], 'bs', markersize=6)
+    collision_dots_risk, = ax_risk.plot([], [], 'bx', markersize=5)
     ax_risk.plot(goal_data[1], goal_data[0], 'b*', markersize=10)
     ax_risk.set_title(f"Dynamic Planning ({method})")
     ax_risk.axis('off')
@@ -146,6 +151,8 @@ def run_demo(
         'obs_dots_risk': obs_dots_risk,
         'agent_dot_bin': agent_dot_bin,
         'agent_dot_risk': agent_dot_risk,
+        'collision_dots_bin': collision_dots_bin,
+        'collision_dots_risk': collision_dots_risk,
         'path_line': path_line,
         'global_path_bin': gp_line_bin
     }
