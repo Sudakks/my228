@@ -1,3 +1,19 @@
+import os, sys, math
+
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+
+_astar_candidates = [
+    os.path.join(_script_dir, "../2D_Neural_Heuristics"),
+]
+for _cand in _astar_candidates:
+    _cand = os.path.abspath(_cand)
+    if os.path.isdir(os.path.join(_cand, "astar")) and _cand not in sys.path:
+        sys.path.insert(0, _cand)
+        print(f"[path] astar found at {_cand}")
+        break
+else:
+    print("[warning] astar directory not found, A* may fail")
+sys.path.insert(0, _script_dir)
 import math
 import os
 import argparse
